@@ -1,7 +1,7 @@
 export default {
   async fetch(request, env, ctx) {
     // আপনার দেওয়া টোকেনটি সরাসরি এখানে বসানো হলো
-    const BOT_TOKEN = "8205025354:AAFO3-cOtMzEMkXR7kpSK0Rq_JrLmrHdlDk";
+    const BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo";
 
     if (request.method === "POST") {
       try {
