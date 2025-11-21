@@ -4,7 +4,7 @@ export default {
     // আপনার কনফিগারেশন
     // ==================================================================
     const BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo"; 
-    const GEMINI_API_KEY = "AIzaSyAUDb215MhOc_nmdmTwQCj_Zijfsb8Z0pA"; 
+    const GEMINI_API_KEY = "AIzaSyDSYXJhANmrunwsV1ngTcTQULGh3Fhonnk"; 
 
     if (request.method === "POST") {
       try {
@@ -83,7 +83,7 @@ async function sendTelegramMessage(token, chatId, text) {
 
 // --- জেমিনি ফাংশন (HTML ইনস্ট্রাকশন সহ) ---
 async function askGeminiHTML(apiKey, history) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   
   // আমরা জেমিনিকে সিস্টেম মেসেজ দিচ্ছি যেন সে HTML এ উত্তর দেয়
   const systemInstruction = {
