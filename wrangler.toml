@@ -1,3 +1,8 @@
 name = "tele-bot-test"
 main = "worker.js"
 compatibility_date = "2024-11-21"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "tele-bot-db"
+database_id = "5c69f0b8-7d44-4f1d-82d5-ba1461045bb5"
