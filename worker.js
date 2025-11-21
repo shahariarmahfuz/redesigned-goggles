@@ -65,7 +65,7 @@ async function sendTelegramMessage(token, chatId, text) {
 
 // --- জেমিনি AI ফাংশন (সাথে ডিবাগিং) ---
 async function askGemini(apiKey, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
   
   try {
     const response = await fetch(url, {
