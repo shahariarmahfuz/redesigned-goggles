@@ -63,7 +63,7 @@ async function sendTelegramMessage(token, chatId, text) {
 // --- জেমিনি AI এর সাথে কথা বলার ফাংশন ---
 async function askGemini(apiKey, prompt) {
   // gemini-1.5-flash মডেল ব্যবহার করা হচ্ছে (দ্রুত এবং ফ্রি)
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   
   try {
     const response = await fetch(url, {
