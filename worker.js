@@ -1,13 +1,8 @@
 export default {
   async fetch(request, env, ctx) {
-    // ==================================================================
-    // সেটিং এরিয়া: এখানে আপনার আসল টোকেন এবং কি বসান
-    // ==================================================================
+    // আপনার কনফিগারেশন
     const BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo"; 
-    
-    // ⚠️ নিচে আপনার আসল Gemini API Key বসান (ফেক দিলে কাজ করবে না)
-    const GEMINI_API_KEY = "AIzaSyDqac3yFY5OnSeK4Kl5luWm8X9ASROdDJI"; 
-    // ==================================================================
+    const GEMINI_API_KEY = "AIzaSyDqac3yFY5OnSeK4Kl5luWm8X9ASROdDJI"; // আপনার আসল কি বসাবেন
 
     if (request.method === "POST") {
       try {
@@ -17,43 +12,49 @@ export default {
           const text = payload.message.text;
           const user = payload.message.from;
 
-          // ১. /start কমান্ড
+          // --- ১. /start হ্যান্ডলিং ---
           if (text === "/start") {
-            // ডাটাবেসে ইউজার সেভ করা
-            await env.DB.prepare(
-              "INSERT OR IGNORE INTO users (chat_id, username, first_name, balance) VALUES (?, ?, ?, ?)"
-            ).bind(chatId, user.username, user.first_name, 50).run();
-
-            await sendTelegramMessage(BOT_TOKEN, chatId, `স্বাগতম ${user.first_name}! আমি রেডি। আমাকে যেকোনো প্রশ্ন করতে পারেন।`);
+            // ইউজার সেভ করা
+            await env.DB.prepare("INSERT OR IGNORE INTO users (chat_id, username, first_name, balance) VALUES (?, ?, ?, ?)").bind(chatId, user.username, user.first_name, 50).run();
+            // পুরনো চ্যাট মুছে ফেলা (রিসেট)
+            await env.DB.prepare("DELETE FROM messages WHERE chat_id = ?").bind(chatId).run();
+            
+            await sendTelegramMessage(BOT_TOKEN, chatId, `স্বাগতম ${user.first_name}! আমি আপনার আগের কথা মনে রাখতে পারি। কথা বলা শুরু করুন!`);
           }
 
-          // ২. /me কমান্ড
-          else if (text === "/me") {
-            const userData = await env.DB.prepare("SELECT * FROM users WHERE chat_id = ?").bind(chatId).first();
-            if (userData) {
-              const msg = `👤 নাম: ${userData.first_name}\n💰 ব্যালেন্স: ${userData.balance} টাকা`;
-              await sendTelegramMessage(BOT_TOKEN, chatId, msg);
-            } else {
-              await sendTelegramMessage(BOT_TOKEN, chatId, "প্রোফাইল পাওয়া যায়নি।");
-            }
-          }
-
-          // ৩. বাকি সব কথা জেমিনি AI বলবে
+          // --- ২. AI চ্যাট (হিস্ট্রি সহ) ---
           else {
-            // জেমিনির কাছে পাঠানো হচ্ছে
-            const aiReply = await askGemini(GEMINI_API_KEY, text);
+            // ক) ইউজারের মেসেজ ডাটাবেসে সেভ করা
+            await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', ?)").bind(chatId, text).run();
+
+            // খ) আগের ১০টি মেসেজ ডাটাবেস থেকে আনা (স্মৃতি)
+            const { results } = await env.DB.prepare("SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 10").bind(chatId).all();
+            
+            // গ) ডাটাবেসের উল্টো লিস্ট সোজা করা এবং জেমিনির ফরমেটে সাজানো
+            const history = results.reverse().map(msg => ({
+              role: msg.role,
+              parts: [{ text: msg.content }]
+            }));
+
+            // ঘ) জেমিনির কাছে পাঠানো (পুরো হিস্ট্রি সহ)
+            const aiReply = await askGeminiWithHistory(GEMINI_API_KEY, history);
+
+            // ঙ) জেমিনির উত্তর ডাটাবেসে সেভ করা
+            await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'model', ?)").bind(chatId, aiReply).run();
+            
+            // চ) টেলিগ্রামে পাঠানো
             await sendTelegramMessage(BOT_TOKEN, chatId, aiReply);
           }
         }
       } catch (e) {
-        // সিস্টেম এরর
+        // Error ignore
       }
     }
-    return new Response("Bot is Running", { status: 200 });
+    return new Response("Memory Bot Running", { status: 200 });
   },
 };
 
-// --- টেলিগ্রামে মেসেজ পাঠানোর ফাংশন ---
+// --- টেলিগ্রাম মেসেজ ফাংশন ---
 async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   await fetch(url, {
@@ -63,39 +64,29 @@ async function sendTelegramMessage(token, chatId, text) {
   });
 }
 
-// --- জেমিনি AI ফাংশন (সাথে ডিবাগিং) ---
-async function askGemini(apiKey, prompt) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+// --- জেমিনি ফাংশন (হিস্ট্রি সাপোর্ট সহ) ---
+async function askGeminiWithHistory(apiKey, history) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{
-          parts: [{ text: prompt }]
-        }]
+        contents: history // শুধু টেক্সট না, পুরো হিস্ট্রি যাচ্ছে
       })
     });
 
     const data = await response.json();
 
-    // ১. যদি গুগল এরর দেয় (যেমন: Key Invalid)
-    if (data.error) {
-      return `⚠️ Google Error: ${data.error.message}\n(আপনার API Key টি চেক করুন)`;
-    }
-
-    // ২. যদি সঠিক উত্তর আসে
     if (data.candidates && data.candidates.length > 0) {
       return data.candidates[0].content.parts[0].text;
-    } 
-    
-    // ৩. অন্য কোনো সমস্যা
-    else {
-      return `অদ্ভুত সমস্যা! রেসপন্স দেখুন: ${JSON.stringify(data)}`;
+    } else if (data.error) {
+      return `Error: ${data.error.message}`;
+    } else {
+      return "দুঃখিত, উত্তর দিতে পারছি না।";
     }
-
   } catch (error) {
-    return `কোড বা নেটওয়ার্ক এরর: ${error.message}`;
+    return "নেটওয়ার্ক সমস্যা।";
   }
 }
