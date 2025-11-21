@@ -6,7 +6,7 @@ export default {
     const BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo"; 
     
     // ⚠️ নিচে আপনার আসল Gemini API Key বসান (ফেক দিলে কাজ করবে না)
-    const GEMINI_API_KEY = "AIzaSyAUDb215MhOc_nmdmTwQCj_Zijfsb8Z0pA"; 
+    const GEMINI_API_KEY = "AIzaSyDqac3yFY5OnSeK4Kl5luWm8X9ASROdDJI"; 
     // ==================================================================
 
     if (request.method === "POST") {
