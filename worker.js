@@ -1,8 +1,7 @@
 export default {
   async fetch(request, env, ctx) {
-    // env থেকে টোকেন নেওয়া হচ্ছে
     const BOT_TOKEN = env.BOT_TOKEN; 
-    const GEMINI_API_KEY = env.GEMINI_API_KEY;
+    // GEMINI_API_KEY আর লাগছে না
 
     if (request.method === "POST") {
       try {
@@ -15,9 +14,8 @@ export default {
           // --- ১. /start কমান্ড ---
           if (text === "/start") {
             await env.DB.prepare("INSERT OR IGNORE INTO users (chat_id, username, first_name, balance) VALUES (?, ?, ?, ?)").bind(chatId, user.username, user.first_name, 50).run();
-            await env.DB.prepare("DELETE FROM messages WHERE chat_id = ?").bind(chatId).run();
             
-            const welcomeMsg = `স্বাগতম *${user.first_name}*!\n\nএখন ফরম্যাটিং একদম ঠিকভাবে কাজ করবে:\n\n• প্লেইন টেক্সট লিস্ট\n• *বোল্ড লিস্ট*\n• _ইতালিক লিস্ট_`;
+            const welcomeMsg = `স্বাগতম *${user.first_name}*!\n\nআমি এখন একটি ইমেজ বট। আপনি যা লিখবেন, আমি তা ছবিতে রূপান্তর করে দিব!`;
             await sendTelegramMessage(BOT_TOKEN, chatId, welcomeMsg);
           }
 
@@ -30,37 +28,29 @@ export default {
             }
           }
 
-          // --- ৩. AI চ্যাট ---
+          // --- ৩. টেক্সট টু ইমেজ কনভারশন ---
           else {
-            // মেসেজ সেভ
-            await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', ?)").bind(chatId, text).run();
+            // ক) ইউজারের টেক্সটকে URL এর জন্য এনকোড করা (যাতে স্পেস বা বিশেষ চিহ্নে সমস্যা না হয়)
+            const encodedText = encodeURIComponent(text);
 
-            // হিস্ট্রি আনা
-            const { results } = await env.DB.prepare("SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 10").bind(chatId).all();
-            const history = results.reverse().map(msg => ({ role: msg.role, parts: [{ text: msg.content }] }));
+            // খ) ইমেজ তৈরির লিংক বানানো
+            // 800x600 সাইজ, ffffff (সাদা) ব্যাকগ্রাউন্ড, 000000 (কালো) টেক্সট
+            const imageUrl = `https://placehold.co/800x600/ffffff/000000/png?text=${encodedText}&font=roboto`;
 
-            // জেমিনির উত্তর আনা
-            let aiReply = await askGemini(GEMINI_API_KEY, history);
-
-            // ডাটাবেসে অরিজিনাল উত্তর সেভ
-            await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'model', ?)").bind(chatId, aiReply).run();
-
-            // 🛠️ ফরম্যাট ঠিক করা (লাইন বাই লাইন)
-            const formattedReply = convertToTelegramMarkdown(aiReply);
-            
-            // টেলিগ্রামে পাঠানো
-            await sendTelegramMessage(BOT_TOKEN, chatId, formattedReply);
+            // গ) টেলিগ্রামে ছবি পাঠানো
+            // আমরা ক্যাপশন হিসেবে আসল টেক্সটটি দিয়ে দিচ্ছি
+            await sendTelegramPhoto(BOT_TOKEN, chatId, imageUrl, `আপনার লেখা: ${text}`);
           }
         }
       } catch (e) {
         // Error ignore
       }
     }
-    return new Response("Fixed Formatting Bot Running", { status: 200 });
+    return new Response("Image Bot Running", { status: 200 });
   },
 };
 
-// --- টেলিগ্রাম মেসেজ ফাংশন ---
+// --- টেলিগ্রাম মেসেজ ফাংশন (টেক্সট এর জন্য) ---
 async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   await fetch(url, {
@@ -69,66 +59,23 @@ async function sendTelegramMessage(token, chatId, text) {
     body: JSON.stringify({
       chat_id: chatId,
       text: text,
-      parse_mode: "Markdown" // লিগ্যাসি মার্কডাউন
+      parse_mode: "Markdown"
     }),
   });
 }
 
-// --- জেমিনি ফাংশন ---
-async function askGemini(apiKey, history) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: history })
-    });
-    const data = await response.json();
-    if (data.candidates && data.candidates.length > 0) return data.candidates[0].content.parts[0].text;
-    return "AI Error";
-  } catch (error) {
-    return "Network Error";
-  }
-}
-
 // =======================================================
-// 🛠️ নতুন কনভার্টার ফাংশন (লাইন বাই লাইন প্রসেসিং)
+// 📸 নতুন ফাংশন: টেলিগ্রামে ছবি পাঠানোর জন্য
 // =======================================================
-function convertToTelegramMarkdown(text) {
-  if (!text) return "";
-
-  // ১. পুরো টেক্সটকে লাইন ধরে আলাদা করি
-  const lines = text.split('\n');
-
-  // ২. প্রতিটি লাইন আলাদাভাবে ঠিক করি
-  const formattedLines = lines.map(line => {
-    let newLine = line;
-
-    // ধাপ ক: লিস্ট বা বুলেট পয়েন্ট ঠিক করা
-    // যদি লাইনটি "* " দিয়ে শুরু হয়, তবে সেটাকে "• " বানাই
-    if (/^\*\s/.test(newLine)) {
-      newLine = newLine.replace(/^\*\s/, '• ');
-    }
-
-    // ধাপ খ: বোল্ড ঠিক করা (**Text**) -> (*Text*)
-    // আমরা সাময়িকভাবে এটাকে গোপন কোড (BOLD_MARKER) দিয়ে রিপ্লেস করব
-    // যাতে পরের ধাপে ইতালিকের সাথে মিশে না যায়
-    newLine = newLine.replace(/\*\*(.*?)\*\*/g, 'BOLD_MARKER_START$1BOLD_MARKER_END');
-
-    // ধাপ গ: ইতালিক ঠিক করা (*Text*) -> (_Text_)
-    // এখন যা বাকি আছে সিঙ্গেল স্টার, সেগুলো সব ইতালিক
-    newLine = newLine.replace(/\*(.*?)\*/g, '_$1_');
-
-    // ধাপ ঘ: গোপন কোডকে আসল বোল্ডে (*Text*) ফেরত আনা
-    newLine = newLine.replace(/BOLD_MARKER_START/g, '*');
-    newLine = newLine.replace(/BOLD_MARKER_END/g, '*');
-
-    // ধাপ ঙ: হেডিং থাকলে বোল্ড করা
-    newLine = newLine.replace(/^##\s+(.*)$/, '*$1*');
-
-    return newLine;
+async function sendTelegramPhoto(token, chatId, photoUrl, caption) {
+  const url = `https://api.telegram.org/bot${token}/sendPhoto`;
+  await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      photo: photoUrl, // টেলিগ্রাম এই লিংক থেকে ছবি ডাউনলোড করে ইউজারকে দেখাবে
+      caption: caption || "" // ছবির নিচে লেখা থাকবে
+    }),
   });
-
-  // ৩. সব লাইন আবার জোড়া দিয়ে ফেরত দেই
-  return formattedLines.join('\n');
 }
