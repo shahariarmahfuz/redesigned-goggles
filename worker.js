@@ -1,10 +1,8 @@
 export default {
   async fetch(request, env, ctx) {
-    // ==================================================================
-    // আপনার কনফিগারেশন
-    // ==================================================================
-    const BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo"; 
-    const GEMINI_API_KEY = "AIzaSyDSYXJhANmrunwsV1ngTcTQULGh3Fhonnk"; 
+    // এখন আমরা env থেকে টোকেন নিচ্ছি (সরাসরি কোডে নেই)
+    const BOT_TOKEN = env.BOT_TOKEN; 
+    const GEMINI_API_KEY = env.GEMINI_API_KEY;
 
     if (request.method === "POST") {
       try {
@@ -16,58 +14,58 @@ export default {
 
           // --- ১. /start কমান্ড ---
           if (text === "/start") {
-            await env.DB.prepare(
-              "INSERT OR IGNORE INTO users (chat_id, username, first_name, balance) VALUES (?, ?, ?, ?)"
-            ).bind(chatId, user.username, user.first_name, 50).run();
-            
+            await env.DB.prepare("INSERT OR IGNORE INTO users (chat_id, username, first_name, balance) VALUES (?, ?, ?, ?)").bind(chatId, user.username, user.first_name, 50).run();
             await env.DB.prepare("DELETE FROM messages WHERE chat_id = ?").bind(chatId).run();
             
-            // HTML ফরম্যাটে ওয়েলকাম মেসেজ
-            await sendTelegramMessage(BOT_TOKEN, chatId, `স্বাগতম <b>${user.first_name}</b>! \nআমি এখন কোড এবং ডিজাইন সুন্দরভাবে দেখাতে পারি।`);
+            // ওয়েলকাম মেসেজ
+            const welcomeMsg = `স্বাগতম *${user.first_name}*!\n\nআমি এখন আপনার পছন্দমতো ফরম্যাটিং সাপোর্ট করি:\n• **Bold** হবে *Bold*\n• *Italic* হবে _Italic_`;
+            await sendTelegramMessage(BOT_TOKEN, chatId, welcomeMsg);
           }
 
           // --- ২. /me কমান্ড ---
           else if (text === "/me") {
             const userData = await env.DB.prepare("SELECT * FROM users WHERE chat_id = ?").bind(chatId).first();
             if (userData) {
-              const msg = `👤 <b>প্রোফাইল</b>\n\nনাম: ${userData.first_name}\n💰 ব্যালেন্স: <code>${userData.balance}</code> টাকা`;
+              const msg = `👤 *প্রোফাইল*\n\nনাম: ${userData.first_name}\n💰 ব্যালেন্স: ${userData.balance} টাকা`;
               await sendTelegramMessage(BOT_TOKEN, chatId, msg);
             }
           }
 
-          // --- ৩. AI চ্যাট (HTML সাপোর্টেড) ---
+          // --- ৩. AI চ্যাট (কনভার্টার সহ) ---
           else {
-            // ক) ইউজার মেসেজ সেভ
+            // ক) মেসেজ সেভ
             await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', ?)").bind(chatId, text).run();
 
             // খ) হিস্ট্রি আনা
             const { results } = await env.DB.prepare("SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 10").bind(chatId).all();
             
-            // গ) জেমিনির জন্য হিস্ট্রি সাজানো
             const history = results.reverse().map(msg => ({
               role: msg.role,
               parts: [{ text: msg.content }]
             }));
 
-            // ঘ) জেমিনির কাছে পাঠানো (HTML ইনস্ট্রাকশন সহ)
-            const aiReply = await askGeminiHTML(GEMINI_API_KEY, history);
+            // গ) জেমিনির কাছে পাঠানো
+            let aiReply = await askGemini(GEMINI_API_KEY, history);
 
-            // ঙ) জেমিনির উত্তর ডাটাবেসে সেভ
+            // ঘ) জেমিনির উত্তর ডাটাবেসে সেভ (অরিজিনালটা)
             await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'model', ?)").bind(chatId, aiReply).run();
+
+            // ঙ) টেলিগ্রামের জন্য টেক্সট কনভার্ট করা (ম্যাজিক এখানেই!)
+            const formattedReply = convertToTelegramMarkdown(aiReply);
             
             // চ) টেলিগ্রামে পাঠানো
-            await sendTelegramMessage(BOT_TOKEN, chatId, aiReply);
+            await sendTelegramMessage(BOT_TOKEN, chatId, formattedReply);
           }
         }
       } catch (e) {
         // Error ignore
       }
     }
-    return new Response("HTML Bot Running", { status: 200 });
+    return new Response("Secure Bot Running", { status: 200 });
   },
 };
 
-// --- টেলিগ্রাম মেসেজ ফাংশন (HTML Mode) ---
+// --- টেলিগ্রাম মেসেজ ফাংশন ---
 async function sendTelegramMessage(token, chatId, text) {
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
   await fetch(url, {
@@ -76,43 +74,43 @@ async function sendTelegramMessage(token, chatId, text) {
     body: JSON.stringify({
       chat_id: chatId,
       text: text,
-      parse_mode: "HTML" // এখন আমরা HTML ব্যবহার করছি, যা অনেক বেশি শক্তিশালী
+      parse_mode: "Markdown" // আমরা লিগ্যাসি মার্কডাউন ব্যবহার করছি
     }),
   });
 }
 
-// --- জেমিনি ফাংশন (HTML ইনস্ট্রাকশন সহ) ---
-async function askGeminiHTML(apiKey, history) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+// --- জেমিনি ফাংশন ---
+async function askGemini(apiKey, history) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
   
-  // আমরা জেমিনিকে সিস্টেম মেসেজ দিচ্ছি যেন সে HTML এ উত্তর দেয়
-  const systemInstruction = {
-    role: "user",
-    parts: [{ text: "System Rule: Answer in Telegram-supported HTML format. Use <b>bold</b> for bold, <i>italic</i> for italic, <code>code</code> for inline code, and <pre>code block</pre> for code blocks. Do not use Markdown." }]
-  };
-
-  // সিস্টেম ইনস্ট্রাকশনটি হিস্ট্রির একদম শুরুতে যোগ করে দিচ্ছি
-  const finalContents = [systemInstruction, ...history];
-
   try {
     const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: finalContents
-      })
+      body: JSON.stringify({ contents: history })
     });
-
     const data = await response.json();
-
-    if (data.candidates && data.candidates.length > 0) {
-      return data.candidates[0].content.parts[0].text;
-    } else if (data.error) {
-      return `⚠️ Error: ${data.error.message}`;
-    } else {
-      return "No response from AI.";
-    }
+    if (data.candidates && data.candidates.length > 0) return data.candidates[0].content.parts[0].text;
+    return "AI Response Error";
   } catch (error) {
-    return `Network Error: ${error.message}`;
+    return "Network Error";
   }
+}
+
+// =======================================================
+// 🛠️ কনভার্টার ফাংশন: এটি জেমিনির লেখাকে টেলিগ্রামের উপযোগী করে
+// =======================================================
+function convertToTelegramMarkdown(text) {
+  // ১. জেমিনির ডাবল স্টার (**Bold**) কে টেলিগ্রামের সিঙ্গেল স্টার (*Bold*) বানাবে
+  let cleanText = text.replace(/\*\*(.*?)\*\*/g, '*$1*');
+
+  // ২. জেমিনির সিঙ্গেল স্টার (*Italic*) কে টেলিগ্রামের আন্ডারস্কোর (_Italic_) বানাবে
+  // কিন্তু খেয়াল রাখবে যেন তালিকার শুরুতে থাকা স্টার (* List) নষ্ট না হয়
+  // লজিক: স্টারের আগে যদি স্পেস বা লাইন ব্রেক থাকে এবং পরে টেক্সট থাকে, তবেই চেঞ্জ হবে
+  cleanText = cleanText.replace(/(^|\s)\*([^\s*]+.*?)\*/g, '$1_$2_');
+
+  // ৩. জেমিনির হেডিং (## Title) কে বোল্ড (*Title*) বানিয়ে দিবে
+  cleanText = cleanText.replace(/^##\s+(.*)$/gm, '*$1*');
+
+  return cleanText;
 }
