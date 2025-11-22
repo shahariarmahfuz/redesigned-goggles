@@ -5,7 +5,7 @@ compatibility_date = "2024-11-21"
 # এইখানে আপনার গোপন চাবিগুলো থাকবে
 [vars]
 BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo"
-GEMINI_API_KEY = "AIzaSyAF_7_T27Nke7z9mqA-mhskPx64pd4EZBg"
+GEMINI_API_KEY = "AIzaSyDHQSN3UC-1gOsiNJf8Umc5pb-rW2BqCTU"
 
 [[d1_databases]]
 binding = "DB"
