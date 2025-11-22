@@ -1,6 +1,6 @@
 export default {
   async fetch(request, env, ctx) {
-    // ১. আমরা সিকিউর ভেরিয়েবল ব্যবহার করছি
+    // env থেকে টোকেন নেওয়া হচ্ছে
     const BOT_TOKEN = env.BOT_TOKEN; 
     const GEMINI_API_KEY = env.GEMINI_API_KEY;
 
@@ -12,16 +12,16 @@ export default {
           const text = payload.message.text;
           const user = payload.message.from;
 
-          // --- /start কমান্ড ---
+          // --- ১. /start কমান্ড ---
           if (text === "/start") {
             await env.DB.prepare("INSERT OR IGNORE INTO users (chat_id, username, first_name, balance) VALUES (?, ?, ?, ?)").bind(chatId, user.username, user.first_name, 50).run();
             await env.DB.prepare("DELETE FROM messages WHERE chat_id = ?").bind(chatId).run();
             
-            const welcomeMsg = `স্বাগতম *${user.first_name}*!\n\nআমি এখন ঠিকভাবে ফরম্যাটিং করতে পারি:\n• *Bold Text*\n• _Italic Text_`;
+            const welcomeMsg = `স্বাগতম *${user.first_name}*!\n\nএখন ফরম্যাটিং একদম ঠিকভাবে কাজ করবে:\n\n• প্লেইন টেক্সট লিস্ট\n• *বোল্ড লিস্ট*\n• _ইতালিক লিস্ট_`;
             await sendTelegramMessage(BOT_TOKEN, chatId, welcomeMsg);
           }
 
-          // --- /me কমান্ড ---
+          // --- ২. /me কমান্ড ---
           else if (text === "/me") {
             const userData = await env.DB.prepare("SELECT * FROM users WHERE chat_id = ?").bind(chatId).first();
             if (userData) {
@@ -30,29 +30,25 @@ export default {
             }
           }
 
-          // --- AI চ্যাট ---
+          // --- ৩. AI চ্যাট ---
           else {
-            // ক) মেসেজ সেভ
+            // মেসেজ সেভ
             await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'user', ?)").bind(chatId, text).run();
 
-            // খ) হিস্ট্রি আনা
+            // হিস্ট্রি আনা
             const { results } = await env.DB.prepare("SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC LIMIT 10").bind(chatId).all();
-            
-            const history = results.reverse().map(msg => ({
-              role: msg.role,
-              parts: [{ text: msg.content }]
-            }));
+            const history = results.reverse().map(msg => ({ role: msg.role, parts: [{ text: msg.content }] }));
 
-            // গ) জেমিনির কাছে পাঠানো
+            // জেমিনির উত্তর আনা
             let aiReply = await askGemini(GEMINI_API_KEY, history);
 
-            // ঘ) ডাটাবেসে অরিজিনাল উত্তর সেভ করা
+            // ডাটাবেসে অরিজিনাল উত্তর সেভ
             await env.DB.prepare("INSERT INTO messages (chat_id, role, content) VALUES (?, 'model', ?)").bind(chatId, aiReply).run();
 
-            // ঙ) কনভার্ট করা (আপনার দেওয়া নিয়ম অনুযায়ী)
+            // 🛠️ ফরম্যাট ঠিক করা (লাইন বাই লাইন)
             const formattedReply = convertToTelegramMarkdown(aiReply);
             
-            // চ) টেলিগ্রামে পাঠানো
+            // টেলিগ্রামে পাঠানো
             await sendTelegramMessage(BOT_TOKEN, chatId, formattedReply);
           }
         }
@@ -60,7 +56,7 @@ export default {
         // Error ignore
       }
     }
-    return new Response("Bot Running with Strict Formatting", { status: 200 });
+    return new Response("Fixed Formatting Bot Running", { status: 200 });
   },
 };
 
@@ -73,7 +69,7 @@ async function sendTelegramMessage(token, chatId, text) {
     body: JSON.stringify({
       chat_id: chatId,
       text: text,
-      parse_mode: "Markdown" // টেলিগ্রামের লিগ্যাসি মোড
+      parse_mode: "Markdown" // লিগ্যাসি মার্কডাউন
     }),
   });
 }
@@ -96,28 +92,43 @@ async function askGemini(apiKey, history) {
 }
 
 // =======================================================
-// 🛠️ কাস্টম কনভার্টার (আপনার নিয়ম অনুযায়ী)
+// 🛠️ নতুন কনভার্টার ফাংশন (লাইন বাই লাইন প্রসেসিং)
 // =======================================================
 function convertToTelegramMarkdown(text) {
   if (!text) return "";
 
-  // ধাপ ১: জেমিনির ডাবল স্টার (**Bold**) কে সাময়িকভাবে একটি গোপন কোড দিয়ে বদলে ফেলি
-  // কারণ আমরা চাই না ইতালিক ঠিক করার সময় এগুলো নষ্ট হোক
-  let cleanText = text.replace(/\*\*(.*?)\*\*/g, 'PLACEHOLDER_BOLD_START$1PLACEHOLDER_BOLD_END');
+  // ১. পুরো টেক্সটকে লাইন ধরে আলাদা করি
+  const lines = text.split('\n');
 
-  // ধাপ ২: লিস্ট বা বুলেট পয়েন্ট ঠিক করা
-  // যদি লাইনের শুরুতে "* " থাকে, সেটাকে "• " দিয়ে বদলে ফেলা
-  cleanText = cleanText.replace(/(^|\n)\*\s/g, '$1• ');
+  // ২. প্রতিটি লাইন আলাদাভাবে ঠিক করি
+  const formattedLines = lines.map(line => {
+    let newLine = line;
 
-  // ধাপ ৩: এবার বাকি থাকা সিঙ্গেল স্টার (*Italic*) কে টেলিগ্রামের আন্ডারস্কোর (_Italic_) এ বদলানো
-  cleanText = cleanText.replace(/\*(.*?)\*/g, '_$1_');
+    // ধাপ ক: লিস্ট বা বুলেট পয়েন্ট ঠিক করা
+    // যদি লাইনটি "* " দিয়ে শুরু হয়, তবে সেটাকে "• " বানাই
+    if (/^\*\s/.test(newLine)) {
+      newLine = newLine.replace(/^\*\s/, '• ');
+    }
 
-  // ধাপ ৪: শেষে গোপন কোডগুলোকে টেলিগ্রামের বোল্ড (*Bold*) এ ফেরত আনা
-  cleanText = cleanText.replace(/PLACEHOLDER_BOLD_START/g, '*');
-  cleanText = cleanText.replace(/PLACEHOLDER_BOLD_END/g, '*');
+    // ধাপ খ: বোল্ড ঠিক করা (**Text**) -> (*Text*)
+    // আমরা সাময়িকভাবে এটাকে গোপন কোড (BOLD_MARKER) দিয়ে রিপ্লেস করব
+    // যাতে পরের ধাপে ইতালিকের সাথে মিশে না যায়
+    newLine = newLine.replace(/\*\*(.*?)\*\*/g, 'BOLD_MARKER_START$1BOLD_MARKER_END');
 
-  // অতিরিক্ত: হেডিং থাকলে সেটাকেও বোল্ড করে দেওয়া
-  cleanText = cleanText.replace(/^##\s+(.*)$/gm, '*$1*');
+    // ধাপ গ: ইতালিক ঠিক করা (*Text*) -> (_Text_)
+    // এখন যা বাকি আছে সিঙ্গেল স্টার, সেগুলো সব ইতালিক
+    newLine = newLine.replace(/\*(.*?)\*/g, '_$1_');
 
-  return cleanText;
+    // ধাপ ঘ: গোপন কোডকে আসল বোল্ডে (*Text*) ফেরত আনা
+    newLine = newLine.replace(/BOLD_MARKER_START/g, '*');
+    newLine = newLine.replace(/BOLD_MARKER_END/g, '*');
+
+    // ধাপ ঙ: হেডিং থাকলে বোল্ড করা
+    newLine = newLine.replace(/^##\s+(.*)$/, '*$1*');
+
+    return newLine;
+  });
+
+  // ৩. সব লাইন আবার জোড়া দিয়ে ফেরত দেই
+  return formattedLines.join('\n');
 }
