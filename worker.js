@@ -1,304 +1,297 @@
-// Cloudflare Worker Entry Point
-export default {
-  async fetch(request, env, ctx) {
-    // শুধুমাত্র POST রিকোয়েস্ট (টেলিগ্রাম ওয়েব হুক থেকে) এলাউড
-    if (request.method !== "POST") {
-      return new Response("Bot is running via Webhook.", { status: 200 });
-    }
+// bot.js — FINAL (uses your provided token & API base)
+// Features:
+// - History (sent as uid to API)
+// - Image support (download from Telegram -> upload to your API as multipart)
+// - Smart GET/POST: GET if <=600 chars and no image, else POST
+// - Preserves code blocks and sends HTML (parse_mode: 'HTML')
+// - Chunking for long replies
+//
+// Requires:
+//   npm install node-telegram-bot-api node-fetch form-data
+//
+// NOTE: In production, move BOT_TOKEN out of source and into env variables.
 
-    try {
-      const update = await request.json();
-      
-      // মেইন লজিক ফাংশন কল করা হচ্ছে (ব্যাকগ্রাউন্ডে যাতে টাইমআউট না খায়)
-      ctx.waitUntil(processUpdate(update, env));
+const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
+const FormData = require('form-data');
+const TelegramBot = require('node-telegram-bot-api');
 
-      return new Response("Ok", { status: 200 });
-    } catch (e) {
-      return new Response("Error: " + e.message, { status: 500 });
-    }
-  }
-};
+// ----- CONFIG (you provided these) -----
+const BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo";
+const API_BASE = "https://ff930dfe-3447-4745-9030-2102395ef11c-00-3sbm2vjl7iscd.sisko.replit.dev";
+// ----------------------------------------
 
-// --- Main Logic Handler ---
-async function processUpdate(update, env) {
-  if (!update.message) return;
-
-  const msg = update.message;
-  const chatId = msg.chat.id;
-  const uid = msg.from.id;
-  
-  // ইনপুট ডিটেকশন
-  const photoArray = msg.photo;
-  const hasPhoto = !!(photoArray && photoArray.length > 0);
-  const text = msg.caption || msg.text || ""; // ছবি থাকলে ক্যাপশন, না থাকলে টেক্সট
-
-  // টেক্সট বা ছবি কিছুই না থাকলে ইগনোর
-  if (!text && !hasPhoto) return;
-
-  // Typing or Upload status পাঠানো
-  await sendChatAction(chatId, hasPhoto ? 'upload_photo' : 'typing', env);
-
-  try {
-    let responseData;
-    
-    // ২. লজিক ডিসিশন মেকিং (হুবহু আপনার আগের লজিক)
-    // ছবি থাকলে = POST
-    // টেক্সট > ৬০০ = POST
-    // অন্যথায় = GET
-    const shouldUsePost = hasPhoto || (text && text.length > 600);
-
-    if (shouldUsePost) {
-      // --- POST METHOD ---
-      const formData = new FormData();
-      formData.append('uid', String(uid));
-      if (text) formData.append('q', text);
-
-      if (hasPhoto) {
-        // হাই কোয়ালিটি ছবি বের করা
-        const fileId = photoArray[photoArray.length - 1].file_id;
-        
-        // ১. টেলিগ্রাম থেকে ফাইল পাথ আনা
-        const fileInfoResp = await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/getFile?file_id=${fileId}`);
-        const fileInfo = await fileInfoResp.json();
-        
-        if (fileInfo.ok) {
-          const filePath = fileInfo.result.file_path;
-          const fileUrl = `https://api.telegram.org/file/bot${env.BOT_TOKEN}/${filePath}`;
-
-          // ২. ছবি ডাউনলোড করা (Blob হিসেবে)
-          const imageRes = await fetch(fileUrl);
-          const imageBlob = await imageRes.blob();
-
-          // ৩. ফর্মে ইমেজ যোগ করা
-          formData.append('image', imageBlob, 'image.jpg');
-        }
-      }
-
-      // আপনার ব্যাকএন্ডে পাঠানো
-      const apiRes = await fetch(`${env.API_BASE}/ask`, {
-        method: 'POST',
-        body: formData
-        // Cloudflare এ FormData পাঠালে হেডার অটো সেট হয়
-      });
-      responseData = await handleApiResponse(apiRes);
-
-    } else {
-      // --- GET METHOD ---
-      const query = encodeURIComponent(text);
-      const apiRes = await fetch(`${env.API_BASE}/ask?q=${query}&uid=${uid}`);
-      responseData = await handleApiResponse(apiRes);
-    }
-
-    if (!responseData) {
-      await sendMessage(chatId, '❌ Empty response from API', env);
-      return;
-    }
-
-    if (responseData.status && responseData.status !== 'success') {
-      await sendMessage(chatId, '❌ API Error: ' + (responseData.message || 'Unknown'), env);
-      return;
-    }
-
-    const htmlResponse = responseData.text || responseData.output || 'No response text';
-    
-    // ৩. সেই স্পেশাল ফরম্যাটিং ফাংশন দিয়ে মেসেজ পাঠানো
-    await sendHtmlSafeMessage(chatId, htmlResponse, env);
-
-  } catch (err) {
-    console.error('Handler error:', err);
-    await sendMessage(chatId, '❌ Bot Error: ' + err.message, env);
-  }
+if (!BOT_TOKEN || BOT_TOKEN.includes("YOUR_TELEGRAM_BOT_TOKEN_HERE")) {
+  console.warn("⚠️ BOT_TOKEN seems missing or placeholder.");
 }
 
-// --- Utilities (API Response Helper) ---
-async function handleApiResponse(response) {
-  const ctype = response.headers.get('content-type') || '';
-  if (ctype.includes('application/json')) {
-    return await response.json();
-  } else {
-    const raw = await response.text();
-    try { return JSON.parse(raw); } catch { return { status: 'success', text: raw }; }
-  }
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+console.log("🤖 Bot started.");
+
+// ---------------- Utilities ----------------
+
+// Escape text for HTML inside <code> or anywhere we want to ensure safety
+function escapeHtml(s) {
+  if (s == null) return "";
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
-// --- Telegram API Helpers (Node Lib Replacement) ---
-async function sendMessage(chatId, text, env, parseMode = null) {
-  const payload = {
-    chat_id: chatId,
-    text: text,
-    disable_web_page_preview: true
-  };
-  if (parseMode) payload.parse_mode = parseMode;
-
-  return await fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-}
-
-async function sendChatAction(chatId, action, env) {
-  // ফায়ার এন্ড ফরগেট, রেসপন্সের দরকার নেই
-  fetch(`https://api.telegram.org/bot${env.BOT_TOKEN}/sendChatAction`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, action: action })
-  }).catch(() => {}); 
-}
-
-// ---------------- FORMATTING UTILITIES (UNCHANGED LOGIC) ----------------
-// আপনার আগের কোড থেকে হুবহু লজিক নিয়ে আসা হয়েছে যাতে প্রোডাক্টিভিটি সেম থাকে।
-
-function escapeHtmlForCode(s) {
-  if (s == null) return "";
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
+// Detect if string already contains HTML entities (to avoid double-escape)
 function alreadyEscaped(s) {
-  if (!s) return false;
-  return s.includes("&lt;") || s.includes("&gt;") || s.includes("&amp;");
+  if (!s) return false;
+  return s.includes("&lt;") || s.includes("&gt;") || s.includes("&amp;");
 }
 
+// Normalize fenced and pre/code blocks: ensure inner is escaped if needed
 function normalizePreBlocks(html) {
-  if (!html) return "";
-  let t = String(html);
-  t = t.replace(/(?:[^\n]*)\n([\s\S]*?)/g, (match, inner) => { // fixed regex slightly for strict mode
-    const safeInner = alreadyEscaped(inner) ? inner : escapeHtmlForCode(inner);
-    return `<pre><code>${safeInner}</code></pre>`;
-  });
-  // Fix recursive pre tags logic simplified for JS Regex
-  t = t.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, (match, inner) => {
-     const safeInner = alreadyEscaped(inner) ? inner : escapeHtmlForCode(inner);
-     return `<pre><code>${safeInner}</code></pre>`;
-  });
-  t = t.replace(/(<\/code><\/pre>)(\s*)(<pre><code>)/gi, "$1\n$3");
-  return t;
+  if (!html) return "";
+  let t = String(html);
+
+  // Convert fenced ``` blocks to <pre><code>escaped...</code></pre>
+  t = t.replace(/```(?:[^\n]*)\n([\s\S]*?)```/g, (_, inner) => {
+    const safeInner = alreadyEscaped(inner) ? inner : escapeHtml(inner);
+    return `<pre><code>${safeInner}</code></pre>`;
+  });
+
+  // Normalize existing <pre><code>...</code></pre>
+  t = t.replace(/<pre><code>([\s\S]*?)<\/code><\/pre>/gi, (_, inner) => {
+    const safeInner = alreadyEscaped(inner) ? inner : escapeHtml(inner);
+    return `<pre><code>${safeInner}</code></pre>`;
+  });
+
+  // ensure adjacent pre blocks have newline between them
+  t = t.replace(/(<\/code><\/pre>)(\s*)(<pre><code>)/gi, "$1\n$3");
+
+  return t;
 }
 
-// এই ফাংশনটি বড় মেসেজ ভেঙে পার্ট পার্ট করে
+// Split into chunks <= maxLen, preserving pre/code blocks and preferring paragraph boundaries
 function splitRespectingPreAndParagraphs(text, maxLen = 4000) {
-  if (!text) return [""];
-  const s = String(text);
-  if (s.length <= maxLen) return [s];
-  const re = /(<pre><code>[\s\S]*?<\/code><\/pre>)/gi;
-  const parts = [];
-  let last = 0;
-  let m;
-  while ((m = re.exec(s)) !== null) {
-    if (m.index > last) parts.push({ type: 'text', content: s.slice(last, m.index) });
-    parts.push({ type: 'code', content: m[0] }); // m[1] changed to m[0] for full match
-    last = re.lastIndex;
-  }
-  if (last < s.length) parts.push({ type: 'text', content: s.slice(last) });
-  
-  const chunks = [];
-  let cur = "";
-  const pushCur = () => { if (cur) { chunks.push(cur); cur = ""; } };
-  
-  for (const p of parts) {
-    if (p.type === 'code') {
-      const block = p.content;
-      if ((cur + block).length <= maxLen) {
-        cur += block;
-      } else {
-        pushCur();
-        if (block.length <= maxLen) {
-          chunks.push(block);
-        } else {
-          // কোড ব্লক অনেক বড় হলে ফোর্স স্প্লিট
-          const inner = block.replace(/<\/?pre>|<\/?code>/gi, "");
-          const sliceSize = maxLen - 20;
-          for (let i = 0; i < inner.length; i += sliceSize) {
-            const piece = inner.slice(i, i + sliceSize);
-            const safe = alreadyEscaped(piece) ? piece : escapeHtmlForCode(piece);
-            chunks.push(`<pre><code>${safe}</code></pre>`);
-          }
-        }
-      }
-    } else {
-      const paras = p.content.split(/\n{2,}/g);
-      for (let i = 0; i < paras.length; i++) {
-        const para = paras[i];
-        const piece = cur ? ("\n\n" + para) : para;
-        if ((cur + piece).length <= maxLen) {
-          cur += piece;
-        } else {
-          pushCur();
-          if (piece.length > maxLen) {
-            let rem = piece;
-            while (rem.length > maxLen) {
-              chunks.push(rem.slice(0, maxLen));
-              rem = rem.slice(maxLen);
-            }
-            cur = rem;
-          } else {
-            cur = para;
-          }
-        }
-      }
-    }
-  }
-  pushCur();
-  return chunks;
+  if (!text) return [""];
+  const s = String(text);
+  if (s.length <= maxLen) return [s];
+
+  const re = /(<pre><code>[\s\S]*?<\/code><\/pre>)/gi;
+  const parts = [];
+  let last = 0;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) parts.push({ type: 'text', content: s.slice(last, m.index) });
+    parts.push({ type: 'code', content: m[1] });
+    last = re.lastIndex;
+  }
+  if (last < s.length) parts.push({ type: 'text', content: s.slice(last) });
+
+  const chunks = [];
+  let cur = "";
+  const pushCur = () => { if (cur) { chunks.push(cur); cur = ""; } };
+
+  for (const p of parts) {
+    if (p.type === 'text') {
+      const paras = p.content.split(/\n{2,}/g);
+      for (const para of paras) {
+        const piece = cur ? ("\n\n" + para) : para;
+        if ((cur + piece).length <= maxLen) {
+          cur += piece;
+        } else {
+          pushCur();
+          if (piece.length > maxLen) {
+            let rem = piece;
+            while (rem.length > maxLen) {
+              chunks.push(rem.slice(0, maxLen));
+              rem = rem.slice(maxLen);
+            }
+            cur = rem;
+          } else {
+            cur = para;
+          }
+        }
+      }
+    } else { // pre/code block
+      const block = p.content;
+      if ((cur + block).length <= maxLen) {
+        cur += block;
+      } else {
+        pushCur();
+        if (block.length <= maxLen) {
+          chunks.push(block);
+        } else {
+          // split very large code block into wrapped slices
+          const inner = block.replace(/<\/?pre>|<\/?code>/gi, "");
+          const sliceSize = maxLen - 20;
+          for (let i = 0; i < inner.length; i += sliceSize) {
+            const slice = inner.slice(i, i + sliceSize);
+            const safe = alreadyEscaped(slice) ? slice : escapeHtml(slice);
+            chunks.push(`<pre><code>${safe}</code></pre>`);
+          }
+        }
+      }
+    }
+  }
+
+  pushCur();
+  return chunks;
 }
 
+// Find unclosed allowed tags in a piece and return array of open tag names (stack order)
 function findUnclosedOpenTags(piece) {
-  const allowed = ['b','strong','i','em','code','pre','a'];
-  const globalRegex = /<\/?([a-zA-Z0-9]+)(?:\s+[^>]*)?>/g;
-  const stack = [];
-  let m;
-  while ((m = globalRegex.exec(piece)) !== null) {
-    const token = m[0];
-    const isClose = token.startsWith("</");
-    const tag = m[1].toLowerCase();
-    
-    if (isClose) {
-      if (stack.length && stack[stack.length-1].tag === tag) {
-        stack.pop();
-      }
-    } else {
-      if (allowed.includes(tag)) {
-        stack.push({ tag, open: token });
-      }
-    }
-  }
-  return stack;
+  const allowed = new Set(['b','strong','i','em','code','pre','a']);
+  const tokenRegex = /<\/?[a-zA-Z0-9]+(?:\s+[^>]*)?>/g;
+  const stack = [];
+  let m;
+  while ((m = tokenRegex.exec(piece)) !== null) {
+    const token = m[0];
+    if (/^<\//.test(token)) {
+      // closing tag
+      const tag = token.replace(/^<\/\s*([^\s>]+).*>$/i, '$1').toLowerCase();
+      if (stack.length && stack[stack.length - 1] === tag) {
+        stack.pop();
+      } else {
+        // unmatched close — ignore
+      }
+    } else {
+      const tag = token.replace(/^<\s*([^\s>]+).*>$/i, '$1').toLowerCase();
+      if (allowed.has(tag)) {
+        stack.push(tag);
+      }
+    }
+  }
+  return stack; // open tags left (in order of occurrence)
 }
 
+// Balance chunks: append closers to each chunk and prepend reopeners to next
 function balanceChunks(chunks) {
-  const result = [...chunks];
-  for (let i = 0; i < result.length; i++) {
-    const piece = result[i];
-    const unclosed = findUnclosedOpenTags(piece);
-    if (unclosed && unclosed.length > 0) {
-      const closes = unclosed.slice().reverse().map(x => `</${x.tag}>`).join('');
-      result[i] = piece + closes;
-      const openers = unclosed.map(x => x.open).join(''); // simplified reopening
-      if (i + 1 < result.length) {
-        result[i+1] = openers + result[i+1];
-      }
-    }
-  }
-  return result;
+  const result = [...chunks];
+  for (let i = 0; i < result.length; i++) {
+    const piece = result[i];
+    const unclosed = findUnclosedOpenTags(piece);
+    if (unclosed && unclosed.length > 0) {
+      // append closers in reverse
+      const closes = unclosed.slice().reverse().map(t => `</${t}>`).join('');
+      result[i] = piece + closes;
+      // create openers to add to next chunk
+      const openers = unclosed.map(t => `<${t}>`).join('');
+      if (i + 1 < result.length) {
+        result[i+1] = openers + result[i+1];
+      }
+    }
+  }
+  return result;
 }
 
-async function sendHtmlSafeMessage(chatId, html, env) {
-  let normalized = normalizePreBlocks(html);
-  normalized = normalized.replace(/<br\s*\/?>/gi, '\n');
-  let chunks = splitRespectingPreAndParagraphs(normalized, 4000);
-  chunks = balanceChunks(chunks);
-  
-  for (const chunk of chunks) {
-    try {
-      const res = await sendMessage(chatId, chunk, env, 'HTML');
-      if (!res.ok) {
-        throw new Error(`Telegram API ${res.status}`);
-      }
-    } catch (err) {
-      // HTML ফেইল করলে প্লেইন টেক্সট পাঠানো
-      console.error('Send Error, fallback plain:', err.message);
-      const plain = chunk.replace(/<\/?[^>]+(>|$)/g, '');
-      await sendMessage(chatId, plain, env);
-    }
-  }
+// Send HTML-safe (balanced) message in chunks
+async function sendHtmlSafeMessage(chatId, html) {
+  let normalized = normalizePreBlocks(html);
+  normalized = normalized.replace(/<br\s*\/?>/gi, "\n");
+
+  let chunks = splitRespectingPreAndParagraphs(normalized, 4000);
+  chunks = balanceChunks(chunks);
+
+  for (const chunk of chunks) {
+    try {
+      await bot.sendMessage(chatId, chunk, { parse_mode: 'HTML', disable_web_page_preview: true });
+    } catch (err) {
+      console.error('sendMessage failed for chunk, fallback to plain:', err && err.message);
+      const plain = chunk.replace(/<\/?[^>]+(>|$)/g, '');
+      await bot.sendMessage(chatId, plain);
+    }
+  }
 }
+
+// ---------------- API caller ----------------
+// choose GET/POST depending on rules and send uid
+async function callApi(uid, text, imageBuffer) {
+  const mustPost = !!imageBuffer;
+  const isLong = text && text.length > 600;
+  const usePost = mustPost || isLong;
+
+  if (!usePost) {
+    // GET
+    const q = encodeURIComponent(text || "");
+    const url = `${API_BASE}/ask?uid=${encodeURIComponent(uid)}&q=${q}`;
+    const res = await fetch(url);
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) return res.json();
+    const raw = await res.text();
+    try { return JSON.parse(raw); } catch { return { status: 'success', text: raw }; }
+  }
+
+  // POST (multipart)
+  const form = new FormData();
+  form.append('uid', String(uid));
+  if (text) form.append('q', text);
+  if (imageBuffer) {
+    // node-form-data accepts Buffer with filename
+    form.append('image', imageBuffer, { filename: 'photo.jpg', contentType: 'image/jpeg' });
+  }
+
+  const res = await fetch(`${API_BASE}/ask`, { method: 'POST', body: form });
+  const ct = res.headers.get('content-type') || '';
+  if (ct.includes('application/json')) return res.json();
+  const raw = await res.text();
+  try { return JSON.parse(raw); } catch { return { status: 'success', text: raw }; }
+}
+
+// ---------------- Download image helper ----------------
+async function downloadFileBuffer(filePathOrUrl) {
+  // Accept either a Telegram file URL or direct file path (we'll detect)
+  let url = filePathOrUrl;
+  if (!/^https?:\/\//i.test(url)) {
+    // it's a Telegram file_path — convert to full URL
+    url = `https://api.telegram.org/file/bot${BOT_TOKEN}/${filePathOrUrl}`;
+  }
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed to download file: ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// ---------------- Main message handler ----------------
+bot.on('message', async (msg) => {
+  const chatId = msg.chat.id;
+  const uid = msg.from.id; // telegram user id for history
+  const hasPhoto = !!msg.photo;
+  const text = hasPhoto ? (msg.caption || "") : (msg.text || "");
+
+  if (!hasPhoto && !text) return; // ignore stickers etc.
+
+  try {
+    bot.sendChatAction(chatId, hasPhoto ? 'upload_photo' : 'typing');
+
+    let imageBuffer = null;
+    if (hasPhoto) {
+      // get highest quality photo file_id
+      const fileId = msg.photo[msg.photo.length - 1].file_id;
+      // get file info & file_path
+      const fileInfo = await bot.getFile(fileId); // object with file_path
+      if (!fileInfo || !fileInfo.file_path) throw new Error('Failed to get file info');
+      // download buffer
+      imageBuffer = await downloadFileBuffer(fileInfo.file_path);
+    }
+
+    // call API (GET/POST selection inside callApi)
+    const apiResp = await callApi(uid, text, imageBuffer);
+
+    if (!apiResp) {
+      return bot.sendMessage(chatId, "❌ Empty response from API");
+    }
+    if (apiResp.status && apiResp.status !== 'success') {
+      return bot.sendMessage(chatId, `❌ API Error: ${apiResp.message || apiResp.error || JSON.stringify(apiResp)}`);
+    }
+
+    // API returns formatted HTML in apiResp.text or apiResp.answer
+    const html = apiResp.text || apiResp.answer || apiResp.output || (typeof apiResp === 'string' ? apiResp : '');
+
+    if (!html) {
+      return bot.sendMessage(chatId, "(empty response)");
+    }
+
+    // send safely in chunks
+    await sendHtmlSafeMessage(chatId, html);
+
+  } catch (err) {
+    console.error('Handler error:', err);
+    try { await bot.sendMessage(chatId, `❌ Bot error: ${err.message || err}`); } catch (e) {}
+  }
+});
