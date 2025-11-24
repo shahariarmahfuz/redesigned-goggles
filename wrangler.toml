@@ -1,13 +1,11 @@
 name = "tele-bot-test"
 main = "worker.js"
-compatibility_date = "2024-11-21"
+compatibility_date = "2024-11-24"
 
-# এইখানে আপনার গোপন চাবিগুলো থাকবে
 [vars]
+# আপনার টেলিগ্রাম বটের টোকেন
 BOT_TOKEN = "8205025354:AAHcabaH_MPU8RpOb8xicmL-12Ws0ujaMBo"
-GEMINI_API_KEY = "AIzaSyDHQSN3UC-1gOsiNJf8Umc5pb-rW2BqCTU"
 
-[[d1_databases]]
-binding = "DB"
-database_name = "tele-bot-db"
-database_id = "5c69f0b8-7d44-4f1d-82d5-ba1461045bb5"
+# আপনার ব্যাকএন্ড এপিআই লিংক (যেখানে প্রশ্ন পাঠানো হবে)
+# লক্ষ্য করুন: কোডে /ask যোগ করা আছে, তাই এখানে শুধু মূল ডোমেইন দিন
+API_BASE = "https://ff930dfe-3447-4745-9030-2102395ef11c-00-3sbm2vjl7iscd.sisko.replit.dev"
